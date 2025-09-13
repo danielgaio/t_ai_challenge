@@ -14,8 +14,15 @@ Rules:
 """
 
 from typing import Literal
+from .rules_engine import RulesEngine
+from .default_rules import BulkyByVolumeRule, HeavyRule
 
 Stack = Literal["STANDARD", "SPECIAL", "REJECTED"]
+
+# create a module-level engine and register default rules
+_engine = RulesEngine()
+_engine.register(BulkyByVolumeRule())
+_engine.register(HeavyRule())
 
 
 def sort(width: float, height: float, length: float, mass: float) -> Stack:
@@ -41,16 +48,8 @@ def sort(width: float, height: float, length: float, mass: float) -> Stack:
         # If inputs are not numbers, consider it rejected as a safe default
         return "REJECTED"
 
-    # Determine bulky and heavy according to the rules (thresholds are inclusive)
-    volume = w * h * l
-    is_bulky = volume >= 1_000_000 or w >= 150 or h >= 150 or l >= 150
-    is_heavy = m >= 20
-
-    if is_bulky and is_heavy:
-        return "REJECTED"
-    if is_bulky or is_heavy:
-        return "SPECIAL"
-    return "STANDARD"
+    # Delegate decision to the pluggable rules engine
+    return _engine.decide(w, h, l, m)
 
 
 if __name__ == "__main__":
