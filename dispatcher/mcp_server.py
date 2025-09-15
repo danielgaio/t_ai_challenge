@@ -24,4 +24,4 @@ def sort(width: float, height: float, length: float, mass: float) -> PackageStac
 
 
 if __name__ == "__main__":
-    mcp.run(transport="http", port=8000)
+    mcp.run()

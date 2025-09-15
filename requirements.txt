@@ -1,3 +1,6 @@
 pytest
 fastmcp
 httpx
+mcp
+openai
+python-dotenv
