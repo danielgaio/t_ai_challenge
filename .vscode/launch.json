@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug MCP Client",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/mcp/my_client.py",
+            "console": "integratedTerminal",
+            "args": [
+                "/Users/danielgaio/dev_projects/GitHub/t_ai_challenge/mcp/weather_server.py"
+            ]
+        }
+    ]
+}

@@ -1,23 +1,24 @@
 import asyncio
+import json
+import sys
 from typing import Optional
 from contextlib import AsyncExitStack
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from anthropic import Anthropic
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
 load_dotenv()  # load environment variables from .env
+
 
 class MCPClient:
     def __init__(self):
         # Initialize session and client objects
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
-        self.anthropic = Anthropic()
-    # methods will go here
-
+        self.openai = AsyncOpenAI()  # uses OPENAI_API_KEY from env
 
     async def connect_to_server(self, server_script_path: str):
         """Connect to an MCP server
@@ -25,8 +26,8 @@ class MCPClient:
         Args:
             server_script_path: Path to the server script (.py or .js)
         """
-        is_python = server_script_path.endswith('.py')
-        is_js = server_script_path.endswith('.js')
+        is_python = server_script_path.endswith(".py")
+        is_js = server_script_path.endswith(".js")
         if not (is_python or is_js):
             raise ValueError("Server script must be a .py or .js file")
 
@@ -34,12 +35,16 @@ class MCPClient:
         server_params = StdioServerParameters(
             command=command,
             args=[server_script_path],
-            env=None
+            env=None,
         )
 
-        stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
+        stdio_transport = await self.exit_stack.enter_async_context(
+            stdio_client(server_params)
+        )
         self.stdio, self.write = stdio_transport
-        self.session = await self.exit_stack.enter_async_context(ClientSession(self.stdio, self.write))
+        self.session = await self.exit_stack.enter_async_context(
+            ClientSession(self.stdio, self.write)
+        )
 
         await self.session.initialize()
 
@@ -48,9 +53,9 @@ class MCPClient:
         tools = response.tools
         print("\nConnected to server with tools:", [tool.name for tool in tools])
 
-
     async def process_query(self, query: str) -> str:
-        """Process a query using Claude and available tools"""
+        """Process a query using OpenAI and available MCP tools"""
+        # Start conversation history
         messages = [
             {
                 "role": "user",
@@ -58,65 +63,82 @@ class MCPClient:
             }
         ]
 
+        # Fetch available MCP tools
         response = await self.session.list_tools()
-        available_tools = [{
-            "name": tool.name,
-            "description": tool.description,
-            "input_schema": tool.inputSchema
-        } for tool in response.tools]
+        available_tools = [
+            {
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.inputSchema
+            }
+            for tool in response.tools
+        ]
 
-        # Initial Claude API call
-        response = self.anthropic.messages.create(
-            model="claude-3-5-sonnet-latest",
-            max_tokens=1000,
-            messages=messages,
-            tools=available_tools
-        )
-
-        # Process response and handle tool calls
         final_text = []
 
-        assistant_message_content = []
-        for content in response.content:
-            if content.type == 'text':
-                final_text.append(content.text)
-                assistant_message_content.append(content)
-            elif content.type == 'tool_use':
-                tool_name = content.name
-                tool_args = content.input
+        # First model call
+        response = await self.openai.responses.create(
+            model="gpt-4.1",
+            input=messages,
+            tools=available_tools,
+            max_output_tokens=1000
+        )
 
-                # Execute tool call
-                result = await self.session.call_tool(tool_name, tool_args)
-                final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
+        while True:
+            tool_called = False
 
-                assistant_message_content.append(content)
-                messages.append({
-                    "role": "assistant",
-                    "content": assistant_message_content
-                })
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": content.id,
-                            "content": result.content
-                        }
-                    ]
-                })
+            for item in response.output:
+                # Normal assistant text
+                if item.type == "message":
+                    for content in item.content:
+                        if content.type == "output_text":
+                            final_text.append(content.text)
 
-                # Get next response from Claude
-                response = self.anthropic.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=1000,
-                    messages=messages,
-                    tools=available_tools
-                )
+                # Tool call
+                elif item.type == "function_call":
+                    tool_called = True
+                    tool_name = item.name
+                    tool_args = json.loads(item.arguments)
 
-                final_text.append(response.content[0].text)
+                    # Execute MCP tool
+                    result = await self.session.call_tool(tool_name, tool_args)
+                    final_text.append(f"[Tool {tool_name} called with args {tool_args}]")
+
+                    # Append tool call + result to messages
+                    messages.append({
+                        "role": "assistant",
+                        "content": [{
+                            "type": "function_call",
+                            "id": item.id,
+                            "name": tool_name,
+                            "arguments": tool_args
+                        }]
+                    })
+
+                    messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "function_call_result",
+                            "function_call_id": item.id,
+                            "content": result.content[0].text if result.content else ""
+                        }]
+                    })
+
+                    # Ask model again with tool result
+                    # TODO: error here
+                    response = await self.openai.responses.create(
+                        model="gpt-4.1",
+                        input=messages,
+                        tools=available_tools,
+                        max_output_tokens=1000
+                    )
+                    break  # process follow-up
+
+            if not tool_called:
+                break  # stop if no tools were requested
 
         return "\n".join(final_text)
-    
 
     async def chat_loop(self):
         """Run an interactive chat loop"""
@@ -127,7 +149,7 @@ class MCPClient:
             try:
                 query = input("\nQuery: ").strip()
 
-                if query.lower() == 'quit':
+                if query.lower() == "quit":
                     break
 
                 response = await self.process_query(query)
@@ -135,7 +157,6 @@ class MCPClient:
 
             except Exception as e:
                 print(f"\nError: {str(e)}")
-
 
     async def cleanup(self):
         """Clean up resources"""
@@ -156,8 +177,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    import sys
     asyncio.run(main())
 
-
 # Running the client:# python mcp/my_client.py path/to/mcp_server.py
+# python mcp/my_client.py /Users/danielgaio/dev_projects/GitHub/t_ai_challenge/mcp/weather_server.py

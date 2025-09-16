@@ -46,3 +46,6 @@ python -m unittest discover -v tests
 Notes
 - Be sure you run the commands from the project root so the `t_ai` package/folder is importable.
 - If you see import errors, verify your current working directory and that the virtual environment is active.
+
+## Input test for clint of weather mcp
+How's the weather in new york?
