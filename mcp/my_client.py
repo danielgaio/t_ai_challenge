@@ -68,9 +68,11 @@ class MCPClient:
         available_tools = [
             {
                 "type": "function",
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.inputSchema
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema
+                }
             }
             for tool in response.tools
         ]
@@ -78,28 +80,28 @@ class MCPClient:
         final_text = []
 
         # First model call
-        response = await self.openai.responses.create(
-            model="gpt-4.1",
-            input=messages,
+        response = await self.openai.chat.completions.create(
+            model="gpt-4-1106-preview",
+            messages=messages,
             tools=available_tools,
-            max_output_tokens=1000
+            max_tokens=1000
         )
 
         while True:
             tool_called = False
 
-            for item in response.output:
-                # Normal assistant text
-                if item.type == "message":
-                    for content in item.content:
-                        if content.type == "output_text":
-                            final_text.append(content.text)
-
-                # Tool call
-                elif item.type == "function_call":
-                    tool_called = True
-                    tool_name = item.name
-                    tool_args = json.loads(item.arguments)
+            message = response.choices[0].message
+            
+            # Normal assistant text
+            if message.content:
+                final_text.append(message.content)
+                
+            # Tool call
+            if message.tool_calls:
+                tool_called = True
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.function.name
+                    tool_args = json.loads(tool_call.function.arguments)
 
                     # Execute MCP tool
                     result = await self.session.call_tool(tool_name, tool_args)
@@ -108,30 +110,21 @@ class MCPClient:
                     # Append tool call + result to messages
                     messages.append({
                         "role": "assistant",
-                        "content": [{
-                            "type": "function_call",
-                            "id": item.id,
-                            "name": tool_name,
-                            "arguments": tool_args
-                        }]
+                        "content": f"I'll check that using the {tool_name} tool."
                     })
-
+                    
                     messages.append({
-                        "role": "user",
-                        "content": [{
-                            "type": "function_call_result",
-                            "function_call_id": item.id,
-                            "content": result.content[0].text if result.content else ""
-                        }]
+                        "role": "function",
+                        "name": tool_name,
+                        "content": result.content[0].text if result.content else ""
                     })
 
                     # Ask model again with tool result
-                    # TODO: error here
-                    response = await self.openai.responses.create(
-                        model="gpt-4.1",
-                        input=messages,
+                    response = await self.openai.chat.completions.create(
+                        model="gpt-4-1106-preview",
+                        messages=messages,
                         tools=available_tools,
-                        max_output_tokens=1000
+                        max_tokens=1000
                     )
                     break  # process follow-up
 
