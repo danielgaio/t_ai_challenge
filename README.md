@@ -46,3 +46,11 @@ python -m unittest discover -v tests
 Notes
 - Be sure you run the commands from the project root so the `t_ai` package/folder is importable.
 - If you see import errors, verify your current working directory and that the virtual environment is active.
+
+
+# Tasks
+
+1. Data loading, csv - ok
+2. sanitade data - ok
+3. run it in the sort function - ok
+4. show statistics - ok
