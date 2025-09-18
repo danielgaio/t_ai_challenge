@@ -5,10 +5,16 @@
             "name": "Debug MCP Client",
             "type": "python",
             "request": "launch",
-            "program": "${workspaceFolder}/mcp/my_client.py",
+            // "program": "${workspaceFolder}/dispatcher/mcp/client.py",
+            "module": "dispatcher.mcp.client",
             "console": "integratedTerminal",
+            // "args": [
+            //     "/Users/danielgaio/dev_projects/GitHub/t_ai_challenge/dispatcher/mcp/servers/dispatcher_server.py",
+            //     "/Users/danielgaio/dev_projects/GitHub/t_ai_challenge/dispatcher/mcp/servers/weather_server.py"
+            // ]
             "args": [
-                "/Users/danielgaio/dev_projects/GitHub/t_ai_challenge/mcp/weather_server.py"
+                "dispatcher.mcp.servers.dispatcher_server",
+                "dispatcher.mcp.servers.weather_server"
             ]
         }
     ]

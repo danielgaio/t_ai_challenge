@@ -1,5 +1,5 @@
 from fastmcp import FastMCP
-from package_dispatcher import Stack as PackageStack, sort as package_sort
+from ...package_dispatcher import Stack as PackageStack, sort as package_sort
 
 mcp = FastMCP("Dispatcher MCP Server")
 

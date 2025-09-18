@@ -47,5 +47,6 @@ Notes
 - Be sure you run the commands from the project root so the `t_ai` package/folder is importable.
 - If you see import errors, verify your current working directory and that the virtual environment is active.
 
-## Input test for clint of weather mcp
+## Input test for client of weather mcp
 How's the weather in new york?
+To what stack should the package (150, 10, 10, 1) go?
