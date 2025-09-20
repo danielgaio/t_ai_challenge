@@ -1,7 +1,7 @@
 import asyncio
 import json
 import sys
-# from typing import Optional
+import re
 from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -18,47 +18,6 @@ class MCPClient:
         self.sessions = {}  # Dictionary to store multiple sessions
         self.exit_stack = AsyncExitStack()
         self.openai = AsyncOpenAI()  # uses OPENAI_API_KEY from env
-
-
-    # async def connect_to_server(self, server_script_path: str):
-    #     """Connect to an MCP server
-
-    #     Args:
-    #         server_script_path: Path to the server script (.py or .js)
-    #     """
-    #     is_python = server_script_path.endswith(".py")
-    #     is_js = server_script_path.endswith(".js")
-    #     if not (is_python or is_js):
-    #         raise ValueError("Server script must be a .py or .js file")
-
-    #     command = sys.executable if is_python else "node"  # Use current Python interpreter path
-    #     server_params = StdioServerParameters(
-    #         command=command,
-    #         args=[server_script_path],
-    #         env=None,
-    #     )
-
-    #     stdio_transport = await self.exit_stack.enter_async_context(
-    #         stdio_client(server_params)
-    #     )
-    #     stdio, write = stdio_transport
-    #     session = await self.exit_stack.enter_async_context(
-    #         ClientSession(stdio, write)
-    #     )
-
-    #     await session.initialize()
-
-    #     # List available tools
-    #     response = await session.list_tools()
-    #     tools = response.tools
-        
-    #     # Store session with its script path as key
-    #     self.sessions[server_script_path] = {
-    #         'session': session,
-    #         'tools': tools
-    #     }
-        
-    #     print(f"\nConnected to server {server_script_path} with tools:", [tool.name for tool in tools])
 
 
     async def connect_to_server(self, server_identifier: str):
@@ -131,19 +90,40 @@ class MCPClient:
         ]
 
         # Collect tools from all connected servers
+        # Build sanitized tool names that match the pattern ^[a-zA-Z0-9_-]+$
         available_tools = []
+        tool_mapping = {}  # sanitized_name -> (server_path, original_tool_name)
         for server_path, server_info in self.sessions.items():
             for tool in server_info['tools']:
+                # Create a base name combining server identifier and tool name
+                base_name = f"{server_path}__{tool.name}"
+                # Replace any disallowed chars with underscore
+                sanitized = re.sub(r"[^A-Za-z0-9_-]", "_", base_name)
+                # Ensure unique sanitized name
+                uniq = sanitized
+                suffix = 1
+                while uniq in tool_mapping:
+                    uniq = f"{sanitized}-{suffix}"
+                    suffix += 1
+
+                tool_mapping[uniq] = (server_path, tool.name)
+
                 available_tools.append({
                     "type": "function",
                     "function": {
-                        "name": f"{server_path}::{tool.name}",  # Prefix with server path to make tool names unique
+                        "name": uniq,
                         "description": tool.description,
                         "parameters": tool.inputSchema
                     }
                 })
 
         final_text = []
+
+        # Cache executed tool calls to avoid repeating the same call if the model
+        # re-requests it. Keyed by (sanitized_name, args_json) -> tool_text
+        executed_calls = {}
+        # Track which calls we've already added to final_text during this query
+        handled_calls = set()
 
         # First model call
         response = await self.openai.chat.completions.create(
@@ -166,27 +146,61 @@ class MCPClient:
             if message.tool_calls:
                 tool_called = True
                 for tool_call in message.tool_calls:
-                    tool_name = tool_call.function.name
+                    sanitized_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
 
-                    # Parse server path and tool name
-                    server_path, actual_tool_name = tool_name.split("::", 1)
-                    session = self.sessions[server_path]['session']
-                    
-                    # Execute MCP tool
-                    result = await session.call_tool(actual_tool_name, tool_args)
-                    final_text.append(f"[Tool {actual_tool_name} from server {server_path} called with args {tool_args}]")
+                    if sanitized_name not in tool_mapping:
+                        raise ValueError(f"Unknown tool called: {sanitized_name}")
 
-                    # Append tool call + result to messages
+                    server_path, actual_tool_name = tool_mapping[sanitized_name]
+                    session = self.sessions[server_path]['session']
+
+                    # Use a stable JSON key to detect repeated identical calls
+                    args_key = json.dumps(tool_args, sort_keys=True)
+
+                    if (sanitized_name, args_key) in executed_calls:
+                        # Use cached result instead of executing again
+                        tool_text = executed_calls[(sanitized_name, args_key)]
+                        # If we've already shown the result earlier in this query,
+                        # append a short cached indicator instead of repeating the result.
+                        if (sanitized_name, args_key) in handled_calls:
+                            final_text.append("[cached]")
+                        else:
+                            final_text.append(tool_text)
+                            handled_calls.add((sanitized_name, args_key))
+                    else:
+                        # Execute MCP tool
+                        result = await session.call_tool(actual_tool_name, tool_args)
+
+                        # Immediately include the raw tool result for the user so that
+                        # they see the package stack (e.g., "STANDARD", "SPECIAL", or "REJECTED").
+                        tool_text = ""
+                        try:
+                            tool_text = result.content[0].text if result.content else ""
+                        except Exception:
+                            # Fallback to string representation if structure differs
+                            tool_text = str(result)
+
+                        # Cache the result so repeated requests don't re-run the tool
+                        executed_calls[(sanitized_name, args_key)] = tool_text
+
+                        # Append the tool_text once
+                        if tool_text:
+                            final_text.append(tool_text)
+                            handled_calls.add((sanitized_name, args_key))
+
+                    # Append tool call + result to messages. Use the sanitized name when
+                    # reporting function results back to the model (it must match the
+                    # function name used in the tools list).
                     messages.append({
                         "role": "assistant",
-                        "content": f"I'll check that using the {tool_name} tool."
+                        "content": f"I'll check that using the {actual_tool_name} tool from {server_path}."
                     })
-                    
+
                     messages.append({
                         "role": "function",
-                        "name": tool_name,
-                        "content": result.content[0].text if result.content else ""
+                        "name": sanitized_name,
+                        "content": tool_text
                     })
 
                     # Ask model again with tool result
